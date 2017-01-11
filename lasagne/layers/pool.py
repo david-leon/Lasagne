@@ -119,6 +119,10 @@ class Pool1DLayer(Layer):
         Pooling mode: max-pooling or mean-pooling including/excluding zeros
         from partially padded pooling regions. Default is 'max'.
 
+    axis: {1, ``2``}, on which axis the pooling should be done. Default the last dimension, i.e. axis=2; however in
+        actual scenarioes, Pool1D usually is used with RNN layers, where the pooling should be performed on the 'timestep'
+        axis, i.e. axis=1 there.   [DV]
+
     **kwargs
         Any additional keyword arguments are passed to the :class:`Layer`
         superclass.
@@ -137,7 +141,7 @@ class Pool1DLayer(Layer):
     operation, so it will fall back to a slower implementation.
     """
     def __init__(self, incoming, pool_size, stride=None, pad=0,
-                 ignore_border=True, mode='max', **kwargs):
+                 ignore_border=True, mode='max', axis=2, **kwargs):
         super(Pool1DLayer, self).__init__(incoming, **kwargs)
 
         if len(self.input_shape) != 3:
@@ -151,11 +155,12 @@ class Pool1DLayer(Layer):
         self.pad = as_tuple(pad, 1)
         self.ignore_border = ignore_border
         self.mode = mode
+        self.axis = axis
 
     def get_output_shape_for(self, input_shape):
         output_shape = list(input_shape)  # copy / convert to mutable list
 
-        output_shape[-1] = pool_output_length(input_shape[-1],
+        output_shape[self.axis] = pool_output_length(input_shape[self.axis],     # [DV] add support for 'axis' para
                                               pool_size=self.pool_size[0],
                                               stride=self.stride[0],
                                               pad=self.pad[0],
@@ -166,7 +171,8 @@ class Pool1DLayer(Layer):
 
     def get_output_for(self, input, **kwargs):
         input_4d = T.shape_padright(input, 1)
-
+        if self.axis == 1:                                                       # [DV] add support for 'axis' para
+            input_4d = input_4d.dimshuffle((0, 2, 1, 3))
         pooled = pool_2d(input_4d,
                          ws=(self.pool_size[0], 1),
                          stride=(self.stride[0], 1),
@@ -174,6 +180,8 @@ class Pool1DLayer(Layer):
                          pad=(self.pad[0], 0),
                          mode=self.mode,
                          )
+        if self.axis == 1:                                                       # [DV] add support for 'axis' para
+            pooled = pooled.dimshuffle((0, 2, 1, 3))
         return pooled[:, :, :, 0]
 
 
