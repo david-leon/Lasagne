@@ -809,6 +809,7 @@ class LSTMLayer(MergeLayer):
                  precompute_input=True,
                  mask_input=None,
                  only_return_final=False,
+                 consume_less = 'cpu',
                  **kwargs):
 
         # This layer inherits from a MergeLayer, because it can have four
@@ -848,6 +849,8 @@ class LSTMLayer(MergeLayer):
         self.unroll_scan = unroll_scan
         self.precompute_input = precompute_input
         self.only_return_final = only_return_final
+        self.consume_less = consume_less
+        print('consume_less = ', self.consume_less)
 
         if unroll_scan and gradient_steps != -1:
             raise ValueError(
@@ -998,11 +1001,18 @@ class LSTMLayer(MergeLayer):
              self.b_cell, self.b_outgate], axis=0)
 
         if self.precompute_input:
-            # Because the input is given for all time steps, we can
-            # precompute_input the inputs dot weight matrices before scanning.
-            # W_in_stacked is (n_features, 4*num_units). input is then
-            # (n_time_steps, n_batch, 4*num_units).
-            input = T.dot(input, W_in_stacked) + b_stacked
+            if self.consume_less == 'cpu':
+                x_i = T.dot(input, self.W_in_to_ingate) + self.b_ingate
+                x_f = T.dot(input, self.W_in_to_forgetgate) + self.b_forgetgate
+                x_c = T.dot(input, self.W_in_to_cell) + self.b_cell
+                x_o = T.dot(input, self.W_in_to_outgate) + self.b_outgate
+                input = T.concatenate([x_i, x_f, x_c, x_o], axis=2)
+            else:
+                # Because the input is given for all time steps, we can
+                # precompute_input the inputs dot weight matrices before scanning.
+                # W_in_stacked is (n_features, 4*num_units). input is then
+                # (n_time_steps, n_batch, 4*num_units).
+                input = T.dot(input, W_in_stacked) + b_stacked
 
         # When theano.scan calls step, input_n will be (n_batch, 4*num_units).
         # We define a slicing function that extract the input to each LSTM gate
@@ -1013,21 +1023,45 @@ class LSTMLayer(MergeLayer):
         # input_n is the n'th vector of the input
         def step(input_n, cell_previous, hid_previous, *args):
             if not self.precompute_input:
-                input_n = T.dot(input_n, W_in_stacked) + b_stacked
+                if self.consume_less == 'cpu':
+                    x_i = T.dot(input_n, self.W_in_to_ingate) + self.b_ingate
+                    x_f = T.dot(input_n, self.W_in_to_forgetgate) + self.b_forgetgate
+                    x_c = T.dot(input_n, self.W_in_to_cell) + self.b_cell
+                    x_o = T.dot(input_n, self.W_in_to_outgate) + self.b_outgate
+                else:
+                    input_n = T.dot(input_n, W_in_stacked) + b_stacked
+            elif self.precompute_input and self.consume_less == 'cpu':
+                x_i = input_n[:, :self.num_units]
+                x_f = input_n[:, self.num_units: 2 * self.num_units]
+                x_c = input_n[:, 2 * self.num_units: 3 * self.num_units]
+                x_o = input_n[:, 3 * self.num_units:]
+            else:
+                pass
 
-            # Calculate gates pre-activations and slice
-            gates = input_n + T.dot(hid_previous, W_hid_stacked)
+            if self.consume_less == 'cpu':
+                ingate     = x_i + T.dot(hid_previous, self.W_hid_to_ingate)
+                forgetgate = x_f + T.dot(hid_previous, self.W_hid_to_forgetgate)
+                cell_input = x_c + T.dot(hid_previous, self.W_hid_to_cell)
+                outgate    = x_o + T.dot(hid_previous, self.W_hid_to_outgate)
+                if self.grad_clipping:
+                    ingate     = theano.gradient.grad_clip(ingate, -self.grad_clipping, self.grad_clipping)
+                    forgetgate = theano.gradient.grad_clip(forgetgate, -self.grad_clipping, self.grad_clipping)
+                    cell_input = theano.gradient.grad_clip(cell_input, -self.grad_clipping, self.grad_clipping)
+                    outgate    = theano.gradient.grad_clip(outgate, -self.grad_clipping, self.grad_clipping)
+            else:
+                # Calculate gates pre-activations and slice
+                gates = input_n + T.dot(hid_previous, W_hid_stacked)
 
-            # Clip gradients
-            if self.grad_clipping:
-                gates = theano.gradient.grad_clip(
-                    gates, -self.grad_clipping, self.grad_clipping)
+                # Clip gradients
+                if self.grad_clipping:
+                    gates = theano.gradient.grad_clip(
+                        gates, -self.grad_clipping, self.grad_clipping)
 
-            # Extract the pre-activation gate values
-            ingate = slice_w(gates, 0)
-            forgetgate = slice_w(gates, 1)
-            cell_input = slice_w(gates, 2)
-            outgate = slice_w(gates, 3)
+                # Extract the pre-activation gate values
+                ingate     = slice_w(gates, 0)
+                forgetgate = slice_w(gates, 1)
+                cell_input = slice_w(gates, 2)
+                outgate    = slice_w(gates, 3)
 
             if self.peepholes:
                 # Compute peephole connections
@@ -1081,7 +1115,13 @@ class LSTMLayer(MergeLayer):
             hid_init = T.dot(ones, self.hid_init)
 
         # The hidden-to-hidden weight matrix is always used in step
-        non_seqs = [W_hid_stacked]
+        if self.consume_less == 'cpu':
+            non_seqs = [self.W_hid_to_ingate,
+                        self.W_hid_to_forgetgate,
+                        self.W_hid_to_cell,
+                        self.W_hid_to_outgate]
+        else:
+            non_seqs = [W_hid_stacked]
         # The "peephole" weight matrices are only used when self.peepholes=True
         if self.peepholes:
             non_seqs += [self.W_cell_to_ingate,
@@ -1091,7 +1131,17 @@ class LSTMLayer(MergeLayer):
         # When we aren't precomputing the input outside of scan, we need to
         # provide the input weights and biases to the step function
         if not self.precompute_input:
-            non_seqs += [W_in_stacked, b_stacked]
+            if self.consume_less == 'cpu':
+                non_seqs += [self.W_in_to_ingate,
+                             self.W_in_to_forgetgate,
+                             self.W_in_to_cell,
+                             self.W_in_to_outgate]
+                non_seqs += [self.b_ingate,
+                             self.b_forgetgate,
+                             self.b_cell,
+                             self.b_outgate]
+            else:
+                non_seqs += [W_in_stacked, b_stacked]
 
         if self.unroll_scan:
             # Retrieve the dimensionality of the incoming layer
