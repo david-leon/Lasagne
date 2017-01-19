@@ -849,8 +849,8 @@ class LSTMLayer(MergeLayer):
         self.unroll_scan = unroll_scan
         self.precompute_input = precompute_input
         self.only_return_final = only_return_final
-        self.consume_less = consume_less
-        print('consume_less = ', self.consume_less)
+        self.consume_less = consume_less                          # [DV] add 'consume_less' param
+        # print('consume_less = ', self.consume_less)
 
         if unroll_scan and gradient_steps != -1:
             raise ValueError(

@@ -9,6 +9,7 @@ from ..random import get_rng
 from .base import Layer, MergeLayer
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 
+#[DV] all 'int64' cast changed to 'int32'
 
 __all__ = [
     "NonlinearityLayer",
@@ -404,11 +405,16 @@ class TransformerLayer(MergeLayer):
     ... nonlinearity=None)
     >>> l_trans = lasagne.layers.TransformerLayer(l_in, l_loc)
     """
-    def __init__(self, incoming, localization_network, downsample_factor=1,
+    def __init__(self, incoming, localization_network, theta_mask=None, downsample_factor=1,   # [DV] add `theta_mask` param
                  **kwargs):
         super(TransformerLayer, self).__init__(
             [incoming, localization_network], **kwargs)
         self.downsample_factor = as_tuple(downsample_factor, 2)
+
+        if theta_mask is not None:                                           # [DV] add `theta_mask` param
+            self.theta_mask = T.cast(theta_mask, floatX)
+        else:
+            self.theta_mask = None
 
         input_shp, loc_shp = self.input_shapes
 
@@ -429,16 +435,20 @@ class TransformerLayer(MergeLayer):
     def get_output_for(self, inputs, **kwargs):
         # see eq. (1) and sec 3.1 in [1]
         input, theta = inputs
-        return _transform_affine(theta, input, self.downsample_factor)
+        return _transform_affine(theta, input, self.downsample_factor, self.theta_mask)
 
 
-def _transform_affine(theta, input, downsample_factor):
+def _transform_affine(theta, input, downsample_factor, mask=None):
     num_batch, num_channels, height, width = input.shape
-    theta = T.reshape(theta, (-1, 2, 3))
+    theta = theta.reshape((num_batch, 2, 3))  # T.reshape(theta, (-1, 2, 3))
+    if mask is not None:
+        theta = mask * theta
 
     # grid of (x_t, y_t, 1), eq (1) in ref [1]
-    out_height = T.cast(height // downsample_factor[0], 'int64')
-    out_width = T.cast(width // downsample_factor[1], 'int64')
+    height_f = T.cast(height, floatX)
+    width_f = T.cast(width, floatX)
+    out_height = T.cast(height_f // downsample_factor[0], 'int32')           # [DV] change all 'int64' to 'int32'
+    out_width = T.cast(width_f // downsample_factor[1], 'int32')
     grid = _meshgrid(out_height, out_width)
 
     # Transform A x (x_t, y_t, 1)^T -> (x_s, y_s)
@@ -448,14 +458,12 @@ def _transform_affine(theta, input, downsample_factor):
     x_s_flat = x_s.flatten()
     y_s_flat = y_s.flatten()
 
-    # dimshuffle input to  (bs, height, width, channels)
-    input_dim = input.dimshuffle(0, 2, 3, 1)
-    input_transformed = _interpolate(
-        input_dim, x_s_flat, y_s_flat,
+    # dimshuffle input to  (batch, height, width, channels)
+    input_dimshuffled = input.dimshuffle(0, 2, 3, 1)
+    input_transformed = _interpolate( input_dimshuffled, x_s_flat, y_s_flat,
         out_height, out_width)
 
-    output = T.reshape(
-        input_transformed, (num_batch, out_height, out_width, num_channels))
+    output = T.reshape(input_transformed, (num_batch, out_height, out_width, num_channels))
     output = output.dimshuffle(0, 3, 1, 2)  # dimshuffle to conv format
     return output
 
@@ -481,10 +489,10 @@ def _interpolate(im, x, y, out_height, out_width):
     y0_f = T.floor(y)
     x1_f = x0_f + 1
     y1_f = y0_f + 1
-    x0 = T.cast(x0_f, 'int64')
-    y0 = T.cast(y0_f, 'int64')
-    x1 = T.cast(T.minimum(x1_f, width_f - 1), 'int64')
-    y1 = T.cast(T.minimum(y1_f, height_f - 1), 'int64')
+    x0 = T.cast(x0_f, 'int32')                                         # [DV] change all 'int64' to 'int32'
+    y0 = T.cast(y0_f, 'int32')
+    x1 = T.cast(T.minimum(x1_f, width_f - 1), 'int32')
+    y1 = T.cast(T.minimum(y1_f, height_f - 1), 'int32')
 
     # The input is [num_batch, height, width, channels]. We do the lookup in
     # the flattened input, i.e [num_batch*height*width, channels]. We need
@@ -492,7 +500,7 @@ def _interpolate(im, x, y, out_height, out_width):
     dim2 = width
     dim1 = width*height
     base = T.repeat(
-        T.arange(num_batch, dtype='int64')*dim1, out_height*out_width)
+        T.arange(num_batch, dtype='int32')*dim1, out_height*out_width)
     base_y0 = base + y0*dim2
     base_y1 = base + y1*dim2
     idx_a = base_y0 + x0
@@ -713,8 +721,8 @@ def _transform_thin_plate_spline(
     else:
 
         # Transformed grid
-        out_height = T.cast(height // downsample_factor[0], 'int64')
-        out_width = T.cast(width // downsample_factor[1], 'int64')
+        out_height = T.cast(height // downsample_factor[0], 'int32')
+        out_width = T.cast(width // downsample_factor[1], 'int32')
         orig_grid = _meshgrid(out_height, out_width)
         orig_grid = orig_grid[0:2, :]
         orig_grid = T.tile(orig_grid, (num_batch, 1, 1))
@@ -870,8 +878,8 @@ def _initialize_tps(num_control_points, input_shape, downsample_factor,
 
     if precompute_grid:
         # Construct grid
-        out_height = np.array(height // downsample_factor[0]).astype('int64')
-        out_width = np.array(width // downsample_factor[1]).astype('int64')
+        out_height = np.array(height // downsample_factor[0]).astype('int32')
+        out_width = np.array(width // downsample_factor[1]).astype('int32')
         x_t, y_t = np.meshgrid(np.linspace(-1, 1, out_width),
                                np.linspace(-1, 1, out_height))
         ones = np.ones(np.prod(x_t.shape))
