@@ -412,7 +412,7 @@ class TransformerLayer(MergeLayer):
         self.downsample_factor = as_tuple(downsample_factor, 2)
 
         if theta_mask is not None:                                           # [DV] add `theta_mask` param
-            self.theta_mask = T.cast(theta_mask, floatX)
+            self.theta_mask = theta_mask
         else:
             self.theta_mask = None
 
@@ -440,13 +440,14 @@ class TransformerLayer(MergeLayer):
 
 def _transform_affine(theta, input, downsample_factor, mask=None):
     num_batch, num_channels, height, width = input.shape
-    theta = theta.reshape((num_batch, 2, 3))  # T.reshape(theta, (-1, 2, 3))
     if mask is not None:
         theta = mask * theta
+    theta = theta.reshape((num_batch, 2, 3))  # T.reshape(theta, (-1, 2, 3))
+
 
     # grid of (x_t, y_t, 1), eq (1) in ref [1]
-    height_f = T.cast(height, floatX)
-    width_f = T.cast(width, floatX)
+    height_f = T.cast(height, theano.config.floatX)
+    width_f = T.cast(width, theano.config.floatX)
     out_height = T.cast(height_f // downsample_factor[0], 'int32')           # [DV] change all 'int64' to 'int32'
     out_width = T.cast(width_f // downsample_factor[1], 'int32')
     grid = _meshgrid(out_height, out_width)
