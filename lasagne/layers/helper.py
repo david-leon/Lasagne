@@ -156,7 +156,7 @@ def get_output(layer_or_layers, inputs=None, **kwargs):
     treat_as_input = inputs.keys() if isinstance(inputs, dict) else []
     all_layers = get_all_layers(layer_or_layers, treat_as_input)
     # initialize layer-to-expression mapping from all input layers
-    all_outputs = dict((layer, layer.input_var)
+    all_outputs = dict((layer, layer.input_var)                   # [DV] only 'InputLayer' has .input_var attr
                        for layer in all_layers
                        if isinstance(layer, InputLayer) and
                        layer not in treat_as_input)
