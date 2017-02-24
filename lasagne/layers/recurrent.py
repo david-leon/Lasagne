@@ -422,7 +422,7 @@ class CustomRecurrentLayer(MergeLayer):
             non_seqs += helper.get_all_params(self.input_to_hidden)
 
         # Create single recurrent computation step function
-        def step(input_n, hid_previous, *args):
+        def step(input_n, hid_previous, *args):                    # [DV] input_n = input[:, n, ::], hid_previous.shape = (B, T, ...)
             # Compute the hidden-to-hidden activation
             hid_pre = helper.get_output(
                 self.hidden_to_hidden, hid_previous, **kwargs)
@@ -1441,7 +1441,10 @@ class GRULayer(MergeLayer):
         # When theano.scan calls step, input_n will be (n_batch, 3*num_units).
         # We define a slicing function that extract the input to each GRU gate
         def slice_w(x, n):
-            return x[:, n*self.num_units:(n+1)*self.num_units]
+            s = x[:, n*self.num_units:(n+1)*self.num_units]
+            if self.num_units == 1:
+                s = T.addbroadcast(s, 1)  # Theano cannot infer this by itself
+            return s
 
         # Create single recurrent computation step function
         # input__n is the n'th vector of the input
