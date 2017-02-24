@@ -1,4 +1,4 @@
-from collections import deque
+from collections import deque, OrderedDict  # [DV]
 from difflib import get_close_matches
 from itertools import chain
 from warnings import warn
@@ -14,6 +14,7 @@ __all__ = [
     "get_output",
     "get_output_shape",
     "get_all_params",
+    "get_all_updates",
     "count_params",
     "get_all_param_values",
     "set_all_param_values",
@@ -370,6 +371,14 @@ def get_all_params(layer, unwrap_shared=True, **tags):
             unwrap_shared=unwrap_shared, **tags) for l in layers)
     return utils.unique(params)
 
+# added by [DV]
+def get_all_updates(layer):
+    layers  = get_all_layers(layer)
+    updates = OrderedDict()
+    for layer in layers:
+        if hasattr(layer, 'updates'):
+            updates.update(layer.get_updates())
+    return updates
 
 def count_params(layer, **tags):
     """

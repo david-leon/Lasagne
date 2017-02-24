@@ -40,6 +40,7 @@ class Layer(object):
         self.name = name
         self.params = OrderedDict()
         self.get_output_kwargs = []
+        self.updates = OrderedDict()     # added by [DV]
 
         if any(d is not None and d <= 0 for d in self.input_shape):
             raise ValueError((
@@ -239,6 +240,18 @@ class Layer(object):
 
         return param
 
+    # added by [DV]
+    def add_update(self, updates):
+        """
+        Register updates for layer's parameters
+        :param updates: list of pairs (old_variable, updated_variable)
+        """
+        for v, u in updates:
+            self.updates[v] = u
+
+    # added by [DV]
+    def get_updates(self):
+        return self.updates
 
 class MergeLayer(Layer):
     """
