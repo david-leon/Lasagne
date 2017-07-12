@@ -7,6 +7,23 @@ from theano import tensor as T
 import lasagne
 from lasagne.utils import floatX, as_tuple
 
+try:
+    from theano import gpuarray
+    theano_backend = "pygpu"
+except ImportError:
+    from theano.sandbox import gpuarray
+    theano_backend = "pygpu_sandbox"
+gpu = gpuarray.pygpu_activated
+if not gpu:
+    try:
+        from theano.sandbox import cuda
+        theano_backend = "cuda_sandbox"
+        gpu = cuda.cuda_enabled
+    except ImportError:
+        gpu = False
+    if not gpu:
+        theano_backend = "cpu"
+
 
 def convNd(input, kernel, pad, stride=1, n=None):
     """Execute a batch of a stack of N-dimensional convolutions.
@@ -207,6 +224,57 @@ def transp_conv2d_test_sets():
         kernel = np.random.random((16, 3, 2, 3))
         stride = (2, 3)
         for extend in [(0, 1), (1, 2)]:
+            output = transposed_convNd(input, kernel, 0, stride, extend=extend)
+            kwargs = {'stride': stride, 'flip_filters': True}
+            if symbolic:
+                kwargs['output_size'] = theano.shared(
+                    np.array(output.shape[2:]))
+            else:
+                kwargs['output_size'] = output.shape[2:]
+            yield _convert(input, kernel, output, kwargs)
+
+
+def transp_conv3d_test_sets():
+    def _convert(input, kernel, output, kwargs):
+        return [floatX(input), floatX(kernel), output, kwargs]
+
+    input_shape = (3, 1, 9, 11, 16)
+    for crop in (0, 1, 2, 'full', 'same'):
+        for stride in (1, 2, 3):
+            for filter_size in (1, 3):
+                if stride > filter_size:
+                    continue
+                if crop not in ('full', 'same') and crop > (filter_size - 1):
+                    continue
+                input = np.random.random(input_shape)
+                kernel = np.random.random((16, 1, filter_size, filter_size,
+                                           filter_size))
+                output = transposed_convNd(input, kernel, crop, stride, 3)
+                yield _convert(input, kernel, output, {'crop': crop,
+                                                       'stride': stride,
+                                                       'flip_filters': True})
+
+    # bias-less case
+    input = np.random.random(input_shape)
+    kernel = np.random.random((16, 1, 3, 3, 3))
+    output = transposed_convNd(input, kernel, 'valid')
+    yield _convert(input, kernel, output, {'b': None, 'flip_filters': True})
+    # untie_biases=True case
+    yield _convert(input, kernel, output, {'untie_biases': True,
+                                           'flip_filters': True})
+    # crop='valid' case
+    yield _convert(input, kernel, output, {'crop': 'valid',
+                                           'flip_filters': True})
+    # flip_filters=False case
+    output = transposed_convNd(input, kernel[:, :, ::-1, ::-1, ::-1], 'valid')
+    yield _convert(input, kernel, output, {'flip_filters': False})
+    # extend (w/ and w/out symbolic output shape)
+    for symbolic in [False, True]:
+        input_shape = (4, 3, 7, 9, 11)
+        input = np.random.random(input_shape)
+        kernel = np.random.random((16, 3, 2, 3, 5))
+        stride = (2, 3, 5)
+        for extend in [(0, 1, 3), (1, 2, 4)]:
             output = transposed_convNd(input, kernel, 0, stride, extend=extend)
             kwargs = {'stride': stride, 'flip_filters': True}
             if symbolic:
@@ -458,6 +526,7 @@ class TestConv3DLayerImplementations:
 
     @pytest.fixture(
         params=[
+            ('lasagne.layers', 'Conv3DLayer'),
             ('lasagne.layers.dnn', 'Conv3DDNNLayer'),
         ],
     )
@@ -465,10 +534,9 @@ class TestConv3DLayerImplementations:
         impl_module_name, impl_name = request.param
         try:
             mod = importlib.import_module(impl_module_name)
-        except ImportError:
+            return getattr(mod, impl_name)
+        except (ImportError, AttributeError):
             pytest.skip("{} not available".format(impl_module_name))
-
-        return getattr(mod, impl_name)
 
     @pytest.mark.parametrize(
         "input, kernel, output, kwargs", list(conv3d_test_sets()))
@@ -609,6 +677,81 @@ class TestTransposedConv2DLayer:
                 None, output.shape[1]) + kwargs['output_size']
 
 
+class TestTransposedConv3DLayer:
+    @pytest.fixture(
+        params=[
+            ('lasagne.layers', 'TransposedConv3DLayer')
+        ],
+    )
+    def TransposedConv3DLayerImpl(self, request):
+        impl_module_name, impl_name = request.param
+        try:
+            mod = importlib.import_module(impl_module_name)
+            return getattr(mod, impl_name)
+        except (ImportError, AttributeError):
+            pytest.skip("{} not available".format(impl_module_name))
+
+    @pytest.mark.parametrize(
+        "input, kernel, output, kwargs", list(transp_conv3d_test_sets()))
+    def test_defaults(self, TransposedConv3DLayerImpl, DummyInputLayer,
+                      input, kernel, output, kwargs):
+        b, c, d, h, w = input.shape
+        input_layer = DummyInputLayer((b, c, d, h, w))
+        try:
+            layer = TransposedConv3DLayerImpl(
+                    input_layer,
+                    num_filters=kernel.shape[0],
+                    filter_size=kernel.shape[2:],
+                    W=kernel.transpose(1, 0, 2, 3, 4),
+                    **kwargs)
+            actual = layer.get_output_for(input).eval()
+            assert actual.shape == output.shape
+            # layer.output_shape == actual.shape or None
+            assert all([s1 == s2 for (s1, s2) in
+                        zip(actual.shape, output.shape) if s2])
+            assert np.allclose(actual, output)
+            # Check get_output_shape_for for symbolic output
+            if 'output_size' in kwargs and isinstance(kwargs['output_size'],
+                                                      T.Variable):
+                assert all(el is None for el in
+                           layer.get_output_shape_for(input.shape)[2:])
+        except NotImplementedError:
+            pytest.skip()
+
+    @pytest.mark.parametrize(
+        "input, kernel, output, kwargs", list(transp_conv3d_test_sets()))
+    def test_with_nones(self, TransposedConv3DLayerImpl, DummyInputLayer,
+                        input, kernel, output, kwargs):
+        if kwargs.get('untie_biases', False):
+            pytest.skip()
+        b, c, d, h, w = input.shape
+        input_layer = DummyInputLayer((None, c, None, None, None))
+        try:
+            layer = TransposedConv3DLayerImpl(
+                    input_layer,
+                    num_filters=kernel.shape[0],
+                    filter_size=kernel.shape[2:],
+                    W=kernel.transpose(1, 0, 2, 3, 4),
+                    **kwargs)
+            if 'output_size' not in kwargs or \
+                    isinstance(kwargs['output_size'], T.Variable):
+                assert layer.output_shape == (None, output.shape[1],
+                                              None, None, None)
+            actual = layer.get_output_for(input).eval()
+            assert actual.shape == output.shape
+            assert np.allclose(actual, output)
+            # Check get_output_shape_for for non symbolic output
+            if 'output_size' in kwargs and not \
+                    isinstance(kwargs['output_size'], T.Variable):
+                assert layer.get_output_shape_for(input.shape) == output.shape
+                # The layer should report the output size even when it
+                # doesn't know most of the input size
+                assert layer.output_shape == (
+                    None, output.shape[1]) + kwargs['output_size']
+        except NotImplementedError:
+            pytest.skip()
+
+
 class TestDilatedConv2DLayer:
     @pytest.mark.parametrize(
         "input, kernel, output, kwargs", list(dilated_conv2d_test_sets()))
@@ -660,9 +803,18 @@ class TestDilatedConv2DLayer:
 
 class TestConv2DDNNLayer:
     def test_import_without_gpu_or_cudnn_raises(self):
-        from theano.sandbox import cuda
-        if cuda.cuda_enabled and cuda.dnn.dnn_available():
-            pytest.skip()
+        if theano_backend == 'pygpu':
+            from theano.gpuarray import dnn
+            if dnn.dnn_present():
+                pytest.skip()
+        elif theano_backend == 'pygpu_sandbox':
+            from theano.sandbox.gpuarray import dnn
+            if dnn.dnn_present():
+                pytest.skip()
+        elif theano_backend == 'cuda_sandbox':
+            from theano.sandbox.cuda import dnn
+            if dnn.dnn_available():
+                pytest.skip()
         else:
             with pytest.raises(ImportError):
                 import lasagne.layers.dnn
@@ -670,8 +822,7 @@ class TestConv2DDNNLayer:
 
 class TestConv2DMMLayer:
     def test_import_without_gpu_raises(self):
-        from theano.sandbox import cuda
-        if cuda.cuda_enabled:
+        if theano_backend in ['pygpu', 'pygpu_sandbox', 'cuda_sandbox']:
             pytest.skip()
         else:
             with pytest.raises(ImportError):
@@ -680,8 +831,7 @@ class TestConv2DMMLayer:
 
 class TestConv2DCCLayer:
     def test_import_without_gpu_raises(self):
-        from theano.sandbox import cuda
-        if cuda.cuda_enabled:
+        if theano_backend in ['pygpu', 'pygpu_sandbox', 'cuda_sandbox']:
             pytest.skip()
         else:
             with pytest.raises(ImportError):

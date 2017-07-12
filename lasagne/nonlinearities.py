@@ -159,7 +159,7 @@ def rectify(x):
 
 # leaky rectify
 class LeakyRectify(object):
-    """Leaky rectifier :math:`\\varphi(x) = \\max(\\alpha \\cdot x, x)`
+    """Leaky rectifier :math:`\\varphi(x) = (x > 0)? x : \\alpha \\cdot x`
 
     The leaky rectifier was introduced in [1]_. Compared to the standard
     rectifier :func:`rectify`, it has a nonzero gradient for negative input,
@@ -266,7 +266,7 @@ def elu(x):
        Fast and Accurate Deep Network Learning by Exponential Linear Units
        (ELUs), http://arxiv.org/abs/1511.07289
     """
-    return theano.tensor.switch(x > 0, x, theano.tensor.exp(x) - 1)
+    return theano.tensor.switch(x > 0, x, theano.tensor.expm1(x))
 
 
 # softplus

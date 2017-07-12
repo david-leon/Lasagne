@@ -377,6 +377,12 @@ class TransformerLayer(MergeLayer):
         output image (in both spatial dimensions). A value of 1 will keep the
         original size of the input. Values larger than 1 will downsample the
         input. Values below 1 will upsample the input.
+    border_mode : 'nearest', 'mirror', or 'wrap'
+        Determines how border conditions are handled during interpolation.  If
+        'nearest', points outside the grid are clipped to the boundary. If
+        'mirror', points are mirrored across the boundary. If 'wrap', points
+        wrap around to the other side of the grid.  See
+        http://stackoverflow.com/q/22669252/22670830#22670830 for details.
 
     References
     ----------
@@ -406,11 +412,11 @@ class TransformerLayer(MergeLayer):
     >>> l_trans = lasagne.layers.TransformerLayer(l_in, l_loc)
     """
     def __init__(self, incoming, localization_network, theta_mask=None, downsample_factor=1,   # [DV] add `theta_mask` param
-                 **kwargs):
+                 border_mode='nearest', **kwargs):
         super(TransformerLayer, self).__init__(
             [incoming, localization_network], **kwargs)
         self.downsample_factor = as_tuple(downsample_factor, 2)
-
+		self.border_mode = border_mode
         if theta_mask is not None:                                           # [DV] add `theta_mask` param
             self.theta_mask = theta_mask
         else:
@@ -435,10 +441,10 @@ class TransformerLayer(MergeLayer):
     def get_output_for(self, inputs, **kwargs):
         # see eq. (1) and sec 3.1 in [1]
         input, theta = inputs     # [DV] note that all the coordiantes are regularized in [-1, 1]
-        return _transform_affine(theta, input, self.downsample_factor, self.theta_mask)
+        return _transform_affine(theta, input, self.downsample_factor, self.theta_mask, self.border_mode)
 
 
-def _transform_affine(theta, input, downsample_factor, mask=None):
+def _transform_affine(theta, input, downsample_factor, mask=None, border_mode):
     num_batch, num_channels, height, width = input.shape
     if mask is not None:
         theta = mask * theta
@@ -462,22 +468,20 @@ def _transform_affine(theta, input, downsample_factor, mask=None):
     # dimshuffle input to  (batch, height, width, channels)
     input_dimshuffled = input.dimshuffle(0, 2, 3, 1)
     input_transformed = _interpolate( input_dimshuffled, x_s_flat, y_s_flat,
-        out_height, out_width)
+        out_height, out_width, border_mode)
 
     output = T.reshape(input_transformed, (num_batch, out_height, out_width, num_channels))
     output = output.dimshuffle(0, 3, 1, 2)  # dimshuffle to conv format
     return output
 
 
-def _interpolate(im, x, y, out_height, out_width):
+def _interpolate(im, x, y, out_height, out_width, border_mode):
     # *_f are floats
     num_batch, height, width, channels = im.shape
     height_f = T.cast(height, theano.config.floatX)
     width_f = T.cast(width, theano.config.floatX)
 
     # clip coordinates to [-1, 1]
-    x = T.clip(x, -1, 1)
-    y = T.clip(y, -1, 1)
 
     # scale coordinates from [-1, 1] to [0, width/height - 1]
     x = (x + 1) / 2 * (width_f - 1)
@@ -490,10 +494,28 @@ def _interpolate(im, x, y, out_height, out_width):
     y0_f = T.floor(y)
     x1_f = x0_f + 1
     y1_f = y0_f + 1
-    x0 = T.cast(x0_f, 'int32')                                         # [DV] change all 'int64' to 'int32'
-    y0 = T.cast(y0_f, 'int32')
-    x1 = T.cast(T.minimum(x1_f, width_f - 1), 'int32')
-    y1 = T.cast(T.minimum(y1_f, height_f - 1), 'int32')
+
+    if border_mode == 'nearest':
+        x0 = T.clip(x0_f, 0, width_f - 1)
+        x1 = T.clip(x1_f, 0, width_f - 1)
+        y0 = T.clip(y0_f, 0, height_f - 1)
+        y1 = T.clip(y1_f, 0, height_f - 1)
+    elif border_mode == 'mirror':
+        w = 2 * (width_f - 1)
+        x0 = T.minimum(x0_f % w, -x0_f % w)
+        x1 = T.minimum(x1_f % w, -x1_f % w)
+        h = 2 * (height_f - 1)
+        y0 = T.minimum(y0_f % h, -y0_f % h)
+        y1 = T.minimum(y1_f % h, -y1_f % h)
+    elif border_mode == 'wrap':
+        x0 = T.mod(x0_f, width_f)
+        x1 = T.mod(x1_f, width_f)
+        y0 = T.mod(y0_f, height_f)
+        y1 = T.mod(y1_f, height_f)
+    else:
+        raise ValueError("border_mode must be one of "
+                         "'nearest', 'mirror', 'wrap'")
+    x0, x1, y0, y1 = (T.cast(v, 'int32') for v in (x0, x1, y0, y1))   # [DV] change all 'int64' to 'int32'
 
     # The input is [num_batch, height, width, channels]. We do the lookup in
     # the flattened input, i.e [num_batch*height*width, channels]. We need
@@ -599,6 +621,12 @@ class TPSTransformerLayer(MergeLayer):
         computed as part of the Theano computational graph, which is
         substantially slower as this computation scales with
         num_pixels*num_control_points. Default is 'auto'.
+    border_mode : 'nearest', 'mirror', or 'wrap'
+        Determines how border conditions are handled during interpolation.  If
+        'nearest', points outside the grid are clipped to the boundary'. If
+        'mirror', points are mirrored across the boundary. If 'wrap', points
+        wrap around to the other side of the grid.  See
+        http://stackoverflow.com/q/22669252/22670830#22670830 for details.
 
     References
     ----------
@@ -642,10 +670,12 @@ class TPSTransformerLayer(MergeLayer):
     """
 
     def __init__(self, incoming, localization_network, downsample_factor=1,
-                 control_points=16, precompute_grid='auto', **kwargs):
+                 control_points=16, precompute_grid='auto', 
+				 border_mode='nearest', **kwargs):
         super(TPSTransformerLayer, self).__init__(
                 [incoming, localization_network], **kwargs)
 
+        self.border_mode = border_mode
         self.downsample_factor = as_tuple(downsample_factor, 2)
         self.control_points = control_points
 
@@ -695,12 +725,12 @@ class TPSTransformerLayer(MergeLayer):
         return _transform_thin_plate_spline(
                 dest_offsets, input, self.right_mat, self.L_inv,
                 self.source_points, self.out_height, self.out_width,
-                self.precompute_grid, self.downsample_factor)
+                self.precompute_grid, self.downsample_factor, self.border_mode)
 
 
 def _transform_thin_plate_spline(
         dest_offsets, input, right_mat, L_inv, source_points, out_height,
-        out_width, precompute_grid, downsample_factor):
+        out_width, precompute_grid, downsample_factor, border_mode):
 
     num_batch, num_channels, height, width = input.shape
     num_control_points = source_points.shape[1]
@@ -741,7 +771,7 @@ def _transform_thin_plate_spline(
     input_dim = input.dimshuffle(0, 2, 3, 1)
     input_transformed = _interpolate(
             input_dim, x_transformed, y_transformed,
-            out_height, out_width)
+            out_height, out_width, border_mode)
 
     output = T.reshape(input_transformed,
                        (num_batch, out_height, out_width, num_channels))
