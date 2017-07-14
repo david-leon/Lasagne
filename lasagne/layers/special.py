@@ -416,7 +416,7 @@ class TransformerLayer(MergeLayer):
         super(TransformerLayer, self).__init__(
             [incoming, localization_network], **kwargs)
         self.downsample_factor = as_tuple(downsample_factor, 2)
-		self.border_mode = border_mode
+        self.border_mode = border_mode
         if theta_mask is not None:                                           # [DV] add `theta_mask` param
             self.theta_mask = theta_mask
         else:
@@ -444,7 +444,7 @@ class TransformerLayer(MergeLayer):
         return _transform_affine(theta, input, self.downsample_factor, self.theta_mask, self.border_mode)
 
 
-def _transform_affine(theta, input, downsample_factor, mask=None, border_mode):
+def _transform_affine(theta, input, downsample_factor, mask=None, border_mode='nearest'):
     num_batch, num_channels, height, width = input.shape
     if mask is not None:
         theta = mask * theta
