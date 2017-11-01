@@ -850,6 +850,7 @@ class LSTMLayer(MergeLayer):
         self.precompute_input = precompute_input
         self.only_return_final = only_return_final
         self.consume_less = consume_less                          # [DV] add 'consume_less' param
+        self.cell_out     = None                                  # [DV] add 'cell_out' param
         # print('consume_less = ', self.consume_less)
 
         if unroll_scan and gradient_steps != -1:
@@ -1166,6 +1167,7 @@ class LSTMLayer(MergeLayer):
                 non_sequences=non_seqs,
                 strict=True)[0]
 
+        self.cell_out = cell_out                   # [DV] add for possible external use of `cell_out`
         # When it is requested that we only return the final sequence step,
         # we need to slice it out immediately after scan is applied
         if self.only_return_final:
