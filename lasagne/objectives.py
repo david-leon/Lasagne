@@ -149,6 +149,9 @@ def categorical_crossentropy(predictions, targets):
 
     .. math:: L_i = - \\sum_j{t_{i,j} \\log(p_{i,j})}
 
+    :math:`p` are the predictions, :math:`t` are the targets, :math:`i`
+    denotes the data point and :math:`j` denotes the class.
+
     Parameters
     ----------
     predictions : Theano 2D tensor
@@ -157,6 +160,8 @@ def categorical_crossentropy(predictions, targets):
     targets : Theano 2D tensor or 1D tensor
         Either targets in [0, 1] matching the layout of `predictions`, or
         a vector of int giving the correct class index per data point.
+        In the case of an integer vector argument, each element
+        represents the position of the '1' in a one-hot encoding.
 
     Returns
     -------
@@ -302,7 +307,7 @@ def binary_hinge_loss(predictions, targets, delta=1, log_odds=None,
 def multiclass_hinge_loss(predictions, targets, delta=1):
     """Computes the multi-class hinge loss between predictions and targets.
 
-    .. math:: L_i = \\max_{j \\not = p_i} (0, t_j - t_{p_i} + \\delta)
+    .. math:: L_i = \\max_{j \\not = t_i} (0, p_j - p_{t_i} + \\delta)
 
     Parameters
     ----------
